@@ -9,7 +9,7 @@ This could use some help with:
 1. Making the UI prettier and more intuitive to use.
 2. Adding docs of each style attribute as tooltips (or with a help icon).
 3. Providing a default set of example taffy trees, to showcase how taffy layout works.
-
+4. Add the grid related style attributes to UI.
 
 ### Testing locally
 
