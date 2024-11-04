@@ -1,109 +1,956 @@
-/// We derive Deserialize/Serialize so we can persist app state on shutdown.
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(default)] // if we add new fields, give them default values when deserializing old state
-pub struct TemplateApp {
-    // Example stuff:
-    label: String,
+use egui::{Color32, ComboBox, DragValue, Painter, Sense, Stroke, UiBuilder, Vec2};
+use taffy::{
+    prelude::TaffyZero, AlignContent, AlignItems, AlignSelf, BoxSizing, Dimension, FlexDirection,
+    LengthPercentage, MaxTrackSizingFunction, MinTrackSizingFunction, NodeId, PrintTree, Size,
+    Style, TaffyTree, TextAlign, TraversePartialTree,
+};
 
-    #[serde(skip)] // This how you opt-out of serialization of a field
-    value: f32,
+#[derive(Default, Debug)]
+pub struct TemplateApp {
+    pub editor: TaffyEditor,
 }
 
-impl Default for TemplateApp {
+#[derive(Debug)]
+pub struct TaffyEditor {
+    tree: TaffyTree,
+    root: taffy::NodeId,
+    current_value: NodeId,
+    default_style: Style,
+}
+impl Default for TaffyEditor {
     fn default() -> Self {
+        let mut tree = TaffyTree::new();
+        let mut default_style = Style::DEFAULT;
+        default_style.padding = taffy::Rect {
+            left: LengthPercentage::Length(10.0),
+            right: LengthPercentage::Length(10.0),
+            top: LengthPercentage::Length(10.0),
+            bottom: LengthPercentage::Length(10.0),
+        };
+        default_style.flex_grow = 1.0;
+        default_style.box_sizing = BoxSizing::ContentBox;
+        default_style.size = Size {
+            width: Dimension::Length(50.0),
+            height: Dimension::Length(50.0),
+        };
+        let c0_0 = tree.new_leaf(default_style.clone()).unwrap();
+        let c0_1 = tree.new_leaf(default_style.clone()).unwrap();
+
+        let c0 = tree
+            .new_with_children(
+                {
+                    let mut style = default_style.clone();
+                    style.flex_direction = FlexDirection::Row;
+
+                    style
+                },
+                &[c0_0, c0_1],
+            )
+            .unwrap();
+        let c1 = tree.new_leaf(default_style.clone()).unwrap();
+        let c2 = tree.new_leaf(default_style.clone()).unwrap();
+        let root = tree
+            .new_with_children(
+                {
+                    let mut style = default_style.clone();
+                    style.size = Size {
+                        width: Dimension::Length(600.0),
+                        height: Dimension::Length(400.0),
+                    };
+                    style
+                },
+                &[c0, c1, c2],
+            )
+            .unwrap();
         Self {
-            // Example stuff:
-            label: "Hello World!".to_owned(),
-            value: 2.7,
+            tree,
+            default_style,
+            root,
+            current_value: root,
         }
     }
 }
+impl TaffyEditor {
+    pub fn ui(&mut self, name: &str, ctx: &egui::Context) {
+        let Self {
+            tree,
+            root,
+            current_value,
+            default_style,
+        } = self;
+        let root = *root;
+        egui::Window::new(name)
+            .default_size([600.0, 400.0])
+            .show(ctx, |ui| {
+                let layout = *tree.get_final_layout(root);
+                ui.scope_builder(
+                    UiBuilder::new()
+                        .id_salt("node painter")
+                        .sense(Sense::click()),
+                    |ui| {
+                        ui.set_min_size(egui::vec2(layout.size.width, layout.size.height));
+                        let res = ui.response();
+                        let offset = res.rect.min;
+                        let offset = egui::vec2(offset.x, offset.y);
 
+                        if let Some(pos) = res.hover_pos() {
+                            if let Some(hover_node) = node_event_recursive(
+                                tree,
+                                NodeEvent::Hover(egui::vec2(pos.x, pos.y)),
+                                offset,
+                                root,
+                            ) {
+                                let hover_layout = *tree.get_final_layout(hover_node);
+                                res.clone().on_hover_text(format!("{:#?}", hover_layout));
+                            }
+                        }
+                        if let Some(pos) = res.interact_pointer_pos() {
+                            if let Some(click_node) = node_event_recursive(
+                                tree,
+                                NodeEvent::Click(egui::vec2(pos.x, pos.y)),
+                                offset,
+                                root,
+                            ) {
+                                *current_value = click_node;
+                            }
+                        }
+                        node_tree_paint_recursive(tree, root, ui.painter(), offset, *current_value);
+                    },
+                );
+            });
+        egui::Window::new("node editor")
+            .default_size([600.0, 400.0])
+            .scroll([true, true])
+            .show(ctx, |ui| {
+                ui.columns(2, |columns| {
+                    node_tree_ui_recursive(&mut columns[0], tree, root, current_value);
+                    taffy_style_editor(&mut columns[1], tree, *current_value, default_style);
+                });
+            });
+        tree.compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::MinContent,
+                height: taffy::AvailableSpace::MinContent,
+            },
+        )
+        .unwrap();
+    }
+}
+
+fn node_tree_ui_recursive(
+    ui: &mut egui::Ui,
+    tree: &mut TaffyTree,
+    node_id: taffy::NodeId,
+    current_selected_di: &mut taffy::NodeId,
+) {
+    ui.selectable_value(current_selected_di, node_id, format!("{:?}", node_id));
+    if tree.child_count(node_id) != 0 {
+        ui.indent(node_id, |ui| {
+            for child in tree.children(node_id).unwrap_or_default() {
+                node_tree_ui_recursive(ui, tree, child, current_selected_di);
+            }
+        });
+    }
+}
+fn taffy_style_editor(
+    ui: &mut egui::Ui,
+    tree: &mut TaffyTree,
+    node_id: taffy::NodeId,
+    default_style: &Style,
+) {
+    let Ok(mut style) = tree.style(node_id).cloned() else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        if ui.button("add child").clicked() {
+            let child = tree.new_leaf(default_style.clone()).unwrap();
+            tree.add_child(node_id, child).unwrap();
+        }
+        if ui.button("delete node ").clicked() {
+            let _ = tree.remove(node_id);
+        }
+    });
+    egui::Grid::new("style editor")
+        .num_columns(2)
+        .striped(true)
+        .show(ui, |ui| {
+            {
+                ui.label("display");
+
+                let mut selected = match style.display {
+                    taffy::Display::Block => 0,
+                    taffy::Display::Flex => 1,
+                    taffy::Display::Grid => 2,
+                    taffy::Display::None => 3,
+                };
+                ComboBox::from_id_salt("display").show_index(ui, &mut selected, 4, |i| match i {
+                    0 => "Block",
+                    1 => "Flex",
+                    2 => "Grid",
+                    3 => "None",
+                    _ => unreachable!(),
+                });
+                style.display = match selected {
+                    0 => taffy::Display::Block,
+                    1 => taffy::Display::Flex,
+                    2 => taffy::Display::Grid,
+                    3 => taffy::Display::None,
+                    _ => unreachable!(),
+                };
+                ui.end_row();
+            }
+            {
+                ui.label("box sizing");
+                let mut selected = match style.box_sizing {
+                    taffy::BoxSizing::ContentBox => 0,
+                    taffy::BoxSizing::BorderBox => 1,
+                };
+                ComboBox::from_id_salt("box sizing").show_index(
+                    ui,
+                    &mut selected,
+                    2,
+                    |i| match i {
+                        0 => "ContentBox",
+                        1 => "BorderBox",
+                        _ => unreachable!(),
+                    },
+                );
+                style.box_sizing = match selected {
+                    0 => taffy::BoxSizing::ContentBox,
+                    1 => taffy::BoxSizing::BorderBox,
+                    _ => unreachable!(),
+                };
+                ui.end_row();
+            }
+            {
+                ui.label("overflow");
+                ui.group(|ui| {
+                    ui.vertical(|ui| {
+                        for (salt, value) in [
+                            ("overflow_x", &mut style.overflow.x),
+                            ("overflow_y", &mut style.overflow.y),
+                        ] {
+                            let mut selected = match *value {
+                                taffy::Overflow::Visible => 0,
+                                taffy::Overflow::Hidden => 1,
+                                taffy::Overflow::Scroll => 2,
+                                taffy::Overflow::Clip => 3,
+                            };
+                            ComboBox::from_id_salt(salt).show_index(ui, &mut selected, 4, |i| {
+                                match i {
+                                    0 => "Visible",
+                                    1 => "Hidden",
+                                    2 => "Scroll",
+                                    3 => "Clip",
+                                    _ => unreachable!(),
+                                }
+                            });
+                            *value = match selected {
+                                0 => taffy::Overflow::Visible,
+                                1 => taffy::Overflow::Hidden,
+                                2 => taffy::Overflow::Scroll,
+                                3 => taffy::Overflow::Clip,
+                                _ => unreachable!(),
+                            };
+                        }
+                    });
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("scrollbar width");
+                ui.add(DragValue::new(&mut style.scrollbar_width));
+                ui.end_row();
+            }
+            {
+                ui.label("position");
+                let mut selected = match style.position {
+                    taffy::Position::Relative => 0,
+                    taffy::Position::Absolute => 1,
+                };
+                ComboBox::from_id_salt("position").show_index(ui, &mut selected, 2, |i| match i {
+                    0 => "Relative",
+                    1 => "Absolute",
+                    _ => unreachable!(),
+                });
+                style.position = match selected {
+                    0 => taffy::Position::Relative,
+                    1 => taffy::Position::Absolute,
+                    _ => unreachable!(),
+                };
+                ui.end_row();
+            }
+            {
+                ui.label("inset");
+                ui.push_id("inset", |ui| {
+                    rect_len_percent_auto_ui(ui, &mut style.inset);
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("size");
+                ui.push_id("size", |ui| {
+                    size_dimension_ui(ui, &mut style.size);
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("min_size");
+                ui.push_id("min_size", |ui| {
+                    size_dimension_ui(ui, &mut style.min_size);
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("max_size");
+                ui.push_id("max_size", |ui| {
+                    size_dimension_ui(ui, &mut style.max_size);
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("aspect_ratio");
+                ui.horizontal(|ui| {
+                    ui.push_id("aspect_ratio", |ui| {
+                        let mut enabled = style.aspect_ratio.is_some();
+                        if ui.checkbox(&mut enabled, "enabled").changed() {
+                            if !enabled {
+                                style.aspect_ratio = None;
+                            } else {
+                                style.aspect_ratio = Some(1.0);
+                            }
+                        }
+                        if let Some(ratio) = style.aspect_ratio.as_mut() {
+                            ui.add(DragValue::new(ratio));
+                        }
+                    });
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("margin");
+                ui.push_id("margin", |ui| {
+                    rect_len_percent_auto_ui(ui, &mut style.margin)
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("padding");
+                ui.push_id("padding", |ui| rect_len_percent_ui(ui, &mut style.padding));
+                ui.end_row();
+            }
+            {
+                ui.label("border");
+                ui.push_id("border", |ui| {
+                    rect_len_percent_ui(ui, &mut style.border);
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("align_items");
+                ui.horizontal(|ui| {
+                    ui.push_id("align_items", |ui| {
+                        let mut enabled = style.align_items.is_some();
+                        if ui.checkbox(&mut enabled, "enabled").changed() {
+                            if !enabled {
+                                style.align_items = None;
+                            } else {
+                                style.align_items = Some(AlignItems::Center);
+                            }
+                        }
+                        if let Some(align_items) = style.align_items.as_mut() {
+                            align_items_ui(ui, align_items);
+                        }
+                    });
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("align_self");
+                ui.horizontal(|ui| {
+                    ui.push_id("align_self", |ui| {
+                        let mut enabled = style.align_self.is_some();
+                        if ui.checkbox(&mut enabled, "enabled").changed() {
+                            if !enabled {
+                                style.align_self = None;
+                            } else {
+                                style.align_self = Some(AlignSelf::Center);
+                            }
+                        }
+                        if let Some(align_self) = style.align_self.as_mut() {
+                            align_items_ui(ui, align_self);
+                        }
+                    });
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("justify_items");
+                ui.horizontal(|ui| {
+                    ui.push_id("justify_items", |ui| {
+                        let mut enabled = style.justify_items.is_some();
+                        if ui.checkbox(&mut enabled, "enabled").changed() {
+                            if !enabled {
+                                style.justify_items = None;
+                            } else {
+                                style.justify_items = Some(AlignItems::Center);
+                            }
+                        }
+                        if let Some(justify_items) = style.justify_items.as_mut() {
+                            align_items_ui(ui, justify_items);
+                        }
+                    });
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("justify_self");
+                ui.horizontal(|ui| {
+                    ui.push_id("justify_self", |ui| {
+                        let mut enabled = style.justify_self.is_some();
+                        if ui.checkbox(&mut enabled, "enabled").changed() {
+                            if !enabled {
+                                style.justify_self = None;
+                            } else {
+                                style.justify_self = Some(AlignSelf::Center);
+                            }
+                        }
+                        if let Some(justify_self) = style.justify_self.as_mut() {
+                            align_items_ui(ui, justify_self);
+                        }
+                    });
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("align_content");
+                ui.horizontal(|ui| {
+                    ui.push_id("align_content", |ui| {
+                        let mut enabled = style.align_content.is_some();
+                        if ui.checkbox(&mut enabled, "enabled").changed() {
+                            if !enabled {
+                                style.align_content = None;
+                            } else {
+                                style.align_content = Some(AlignContent::Center);
+                            }
+                        }
+                        if let Some(align_content) = style.align_content.as_mut() {
+                            align_content_ui(ui, align_content);
+                        }
+                    });
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("justify_content");
+                ui.horizontal(|ui| {
+                    ui.push_id("justify_content", |ui| {
+                        let mut enabled = style.justify_content.is_some();
+                        if ui.checkbox(&mut enabled, "enabled").changed() {
+                            if !enabled {
+                                style.justify_content = None;
+                            } else {
+                                style.justify_content = Some(AlignContent::Center);
+                            }
+                        }
+                        if let Some(justify_content) = style.justify_content.as_mut() {
+                            align_content_ui(ui, justify_content);
+                        }
+                    });
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("gap");
+                ui.vertical(|ui| {
+                    ui.push_id("gap_width", |ui| {
+                        len_percent_ui(ui, &mut style.gap.width);
+                    });
+                    ui.push_id("gap_height", |ui| {
+                        len_percent_ui(ui, &mut style.gap.height);
+                    });
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("text_align");
+                let mut selected = match style.text_align {
+                    TextAlign::Auto => 0,
+                    TextAlign::LegacyLeft => 1,
+                    TextAlign::LegacyRight => 2,
+                    TextAlign::LegacyCenter => 3,
+                };
+                ComboBox::from_id_salt("text_align").show_index(
+                    ui,
+                    &mut selected,
+                    4,
+                    |i| match i {
+                        0 => "Auto",
+                        1 => "Left",
+                        2 => "Right",
+                        3 => "Center",
+                        _ => unreachable!(),
+                    },
+                );
+                style.text_align = match selected {
+                    0 => TextAlign::Auto,
+                    1 => TextAlign::LegacyLeft,
+                    2 => TextAlign::LegacyRight,
+                    3 => TextAlign::LegacyCenter,
+                    _ => unreachable!(),
+                };
+                ui.end_row();
+            }
+            {
+                ui.label("flex_direction");
+                let mut selected = match style.flex_direction {
+                    FlexDirection::Row => 0,
+                    FlexDirection::Column => 1,
+                    FlexDirection::RowReverse => 2,
+                    FlexDirection::ColumnReverse => 3,
+                };
+                ComboBox::from_id_salt("flex_direction").show_index(ui, &mut selected, 4, |i| {
+                    match i {
+                        0 => "Row",
+                        1 => "Column",
+                        2 => "RowReverse",
+                        3 => "ColumnReverse",
+                        _ => unreachable!(),
+                    }
+                });
+                style.flex_direction = match selected {
+                    0 => FlexDirection::Row,
+                    1 => FlexDirection::Column,
+                    2 => FlexDirection::RowReverse,
+                    3 => FlexDirection::ColumnReverse,
+                    _ => unreachable!(),
+                };
+                ui.end_row();
+            }
+            {
+                ui.label("flex_wrap");
+
+                let mut selected = match style.flex_wrap {
+                    taffy::FlexWrap::NoWrap => 0,
+                    taffy::FlexWrap::Wrap => 1,
+                    taffy::FlexWrap::WrapReverse => 2,
+                };
+                ComboBox::from_id_salt("flex_wrap").show_index(ui, &mut selected, 3, |i| match i {
+                    0 => "NoWrap",
+                    1 => "Wrap",
+                    2 => "WrapReverse",
+                    _ => unreachable!(),
+                });
+                style.flex_wrap = match selected {
+                    0 => taffy::FlexWrap::NoWrap,
+                    1 => taffy::FlexWrap::Wrap,
+                    2 => taffy::FlexWrap::WrapReverse,
+                    _ => unreachable!(),
+                };
+                ui.end_row();
+            }
+            {
+                ui.label("flex_basis");
+                ui.push_id("flex_basis", |ui| {
+                    dimension_ui(ui, &mut style.flex_basis);
+                });
+                ui.end_row();
+            }
+            {
+                ui.label("flex_grow");
+                ui.add(DragValue::new(&mut style.flex_grow));
+                ui.end_row();
+            }
+            {
+                ui.label("flex_shrink");
+                ui.add(DragValue::new(&mut style.flex_shrink));
+                ui.end_row();
+            }
+        });
+    tree.set_style(node_id, style).unwrap();
+}
+#[allow(unused)]
+fn max_track_size_ui(ui: &mut egui::Ui, value: &mut taffy::MaxTrackSizingFunction) {
+    let mut inner_len_percent = None;
+    let mut inner = None;
+    let mut selected = match value {
+        MaxTrackSizingFunction::Fixed(i) => {
+            inner_len_percent = Some(*i);
+            0
+        }
+        MaxTrackSizingFunction::MinContent => 1,
+        MaxTrackSizingFunction::MaxContent => 2,
+        MaxTrackSizingFunction::FitContent(i) => {
+            inner_len_percent = Some(*i);
+            3
+        }
+        MaxTrackSizingFunction::Auto => 4,
+        MaxTrackSizingFunction::Fraction(i) => {
+            inner = Some(*i);
+            5
+        }
+    };
+    let mut inner_len_percent = inner_len_percent.unwrap_or(LengthPercentage::ZERO);
+    let mut inner = inner.unwrap_or(0.0);
+    ui.horizontal(|ui| {
+        ComboBox::from_id_salt("max_track_size").show_index(ui, &mut selected, 6, |i| match i {
+            0 => "Fixed",
+            1 => "MinContent",
+            2 => "MaxContent",
+            3 => "FitContent",
+            4 => "Auto",
+            5 => "Fraction",
+            _ => unreachable!(),
+        });
+        ui.vertical(|ui| {
+            ui.add_enabled_ui(selected == 3 || selected == 0, |ui| {
+                len_percent_ui(ui, &mut inner_len_percent)
+            });
+            ui.add_enabled_ui(selected == 5, |ui| ui.add(DragValue::new(&mut inner)));
+        });
+        *value = match selected {
+            0 => MaxTrackSizingFunction::Fixed(inner_len_percent),
+            1 => MaxTrackSizingFunction::MinContent,
+            2 => MaxTrackSizingFunction::MaxContent,
+            3 => MaxTrackSizingFunction::FitContent(inner_len_percent),
+            4 => MaxTrackSizingFunction::Auto,
+            5 => MaxTrackSizingFunction::Fraction(inner),
+            _ => unreachable!(),
+        };
+    });
+}
+#[allow(unused)]
+fn min_track_size_ui(ui: &mut egui::Ui, value: &mut taffy::MinTrackSizingFunction) {
+    let mut inner = None;
+    let mut selected = match value {
+        MinTrackSizingFunction::Fixed(i) => {
+            inner = Some(*i);
+            0
+        }
+        MinTrackSizingFunction::MinContent => 1,
+        MinTrackSizingFunction::MaxContent => 2,
+        MinTrackSizingFunction::Auto => 3,
+    };
+    let mut inner = inner.unwrap_or(LengthPercentage::ZERO);
+    ui.horizontal(|ui| {
+        ComboBox::from_id_salt("min_track_size").show_index(ui, &mut selected, 4, |i| match i {
+            0 => "Fixed",
+            1 => "MinContent",
+            2 => "MaxContent",
+            3 => "Auto",
+            _ => unreachable!(),
+        });
+        ui.add_enabled_ui(selected == 1, |ui| len_percent_ui(ui, &mut inner));
+        *value = match selected {
+            0 => MinTrackSizingFunction::Fixed(inner),
+            1 => MinTrackSizingFunction::MinContent,
+            2 => MinTrackSizingFunction::MaxContent,
+            3 => MinTrackSizingFunction::Auto,
+            _ => unreachable!(),
+        };
+    });
+}
+fn align_content_ui(ui: &mut egui::Ui, value: &mut taffy::AlignContent) {
+    let mut selected = match *value {
+        AlignContent::Start => 0,
+        AlignContent::End => 1,
+        AlignContent::FlexStart => 2,
+        AlignContent::FlexEnd => 3,
+        AlignContent::Center => 4,
+        AlignContent::Stretch => 5,
+        AlignContent::SpaceBetween => 6,
+        AlignContent::SpaceEvenly => 7,
+        AlignContent::SpaceAround => 8,
+    };
+    ComboBox::from_id_salt("align_content").show_index(ui, &mut selected, 9, |i| match i {
+        0 => "Start",
+        1 => "End",
+        2 => "FlexStart",
+        3 => "FlexEnd",
+        4 => "Center",
+        5 => "Stretch",
+        6 => "SpaceBetween",
+        7 => "SpaceEvenly",
+        8 => "SpaceAround",
+        _ => unreachable!(),
+    });
+    *value = match selected {
+        0 => AlignContent::Start,
+        1 => AlignContent::End,
+        2 => AlignContent::FlexStart,
+        3 => AlignContent::FlexEnd,
+        4 => AlignContent::Center,
+        5 => AlignContent::Stretch,
+        6 => AlignContent::SpaceBetween,
+        7 => AlignContent::SpaceEvenly,
+        8 => AlignContent::SpaceAround,
+        _ => unreachable!(),
+    };
+}
+fn align_items_ui(ui: &mut egui::Ui, value: &mut taffy::AlignItems) {
+    let mut selected = match *value {
+        AlignItems::Start => 0,
+        AlignItems::End => 1,
+        AlignItems::FlexStart => 2,
+        AlignItems::FlexEnd => 3,
+        AlignItems::Center => 4,
+        AlignItems::Baseline => 5,
+        AlignItems::Stretch => 6,
+    };
+    ComboBox::from_id_salt("align_items").show_index(ui, &mut selected, 7, |i| match i {
+        0 => "Start",
+        1 => "End",
+        2 => "FlexStart",
+        3 => "FlexEnd",
+        4 => "Center",
+        5 => "Baseline",
+        6 => "Stretch",
+        _ => unreachable!(),
+    });
+    *value = match selected {
+        0 => AlignItems::Start,
+        1 => AlignItems::End,
+        2 => AlignItems::FlexStart,
+        3 => AlignItems::FlexEnd,
+        4 => AlignItems::Center,
+        5 => AlignItems::Baseline,
+        6 => AlignItems::Stretch,
+        _ => unreachable!(),
+    };
+}
+fn rect_len_percent_ui(ui: &mut egui::Ui, value: &mut taffy::Rect<taffy::style::LengthPercentage>) {
+    ui.vertical(|ui| {
+        for (seed, value) in [
+            ("left", &mut value.left),
+            ("right", &mut value.right),
+            ("top", &mut value.top),
+            ("bottom", &mut value.bottom),
+        ] {
+            ui.push_id(seed, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(seed);
+                    len_percent_ui(ui, value);
+                });
+            });
+        }
+    });
+}
+fn len_percent_ui(ui: &mut egui::Ui, value: &mut LengthPercentage) {
+    let mut inner;
+    let mut selected = match value {
+        LengthPercentage::Length(i) => {
+            inner = *i;
+            0
+        }
+        LengthPercentage::Percent(i) => {
+            inner = *i;
+            1
+        }
+    };
+    ui.horizontal(|ui| {
+        ComboBox::from_id_salt("length_percent").show_index(ui, &mut selected, 2, |i| match i {
+            0 => "Length",
+            1 => "Percent",
+            _ => unreachable!(),
+        });
+
+        ui.add(DragValue::new(&mut inner));
+        if selected == 0 {
+            *value = LengthPercentage::Length(inner);
+        } else {
+            *value = LengthPercentage::Percent(inner);
+        }
+    });
+}
+fn size_dimension_ui(ui: &mut egui::Ui, value: &mut taffy::Size<taffy::Dimension>) {
+    ui.vertical(|ui| {
+        ui.push_id("width", |ui| dimension_ui(ui, &mut value.width));
+        ui.push_id("height", |ui| dimension_ui(ui, &mut value.height));
+    });
+}
+fn dimension_ui(ui: &mut egui::Ui, value: &mut taffy::Dimension) {
+    let mut inner = 0.0;
+    let mut selected = match value {
+        Dimension::Length(i) => {
+            inner = *i;
+            0
+        }
+        Dimension::Percent(i) => {
+            inner = *i;
+            1
+        }
+        Dimension::Auto => 2,
+    };
+    ui.horizontal(|ui| {
+        ComboBox::from_id_salt("dimension").show_index(ui, &mut selected, 3, |i| match i {
+            0 => "Length",
+            1 => "Percent",
+            2 => "Auto",
+            _ => unreachable!(),
+        });
+
+        ui.add_enabled(selected != 2, DragValue::new(&mut inner));
+
+        *value = match selected {
+            0 => Dimension::Length(inner),
+            1 => Dimension::Percent(inner),
+            2 => Dimension::Auto,
+            _ => unreachable!(),
+        };
+    });
+}
+fn rect_len_percent_auto_ui(
+    ui: &mut egui::Ui,
+    value: &mut taffy::Rect<taffy::style::LengthPercentageAuto>,
+) {
+    ui.vertical(|ui| {
+        for (seed, value) in [
+            ("left", &mut value.left),
+            ("right", &mut value.right),
+            ("top", &mut value.top),
+            ("bottom", &mut value.bottom),
+        ] {
+            ui.horizontal(|ui| {
+                ui.push_id(seed, |ui| {
+                    ui.label(seed);
+                    len_percent_auto_ui(ui, value);
+                });
+            });
+        }
+    });
+}
+fn len_percent_auto_ui(ui: &mut egui::Ui, value: &mut taffy::style::LengthPercentageAuto) {
+    let mut inner = 0.0;
+    let mut selected = match value {
+        taffy::LengthPercentageAuto::Length(i) => {
+            inner = *i;
+            0
+        }
+        taffy::LengthPercentageAuto::Percent(i) => {
+            inner = *i;
+            1
+        }
+        taffy::LengthPercentageAuto::Auto => 2,
+    };
+    ui.horizontal(|ui| {
+        ComboBox::from_id_salt("length_percent_auto").show_index(
+            ui,
+            &mut selected,
+            3,
+            |i| match i {
+                0 => "Length",
+                1 => "Percent",
+                2 => "Auto",
+                _ => unreachable!(),
+            },
+        );
+        ui.add_enabled(selected != 2, DragValue::new(&mut inner));
+        match selected {
+            0 => {
+                *value = taffy::LengthPercentageAuto::Length(inner);
+            }
+            1 => {
+                *value = taffy::LengthPercentageAuto::Percent(inner);
+            }
+            2 => *value = taffy::LengthPercentageAuto::Auto,
+            _ => unreachable!(),
+        }
+    });
+}
+
+#[derive(Debug, Copy, Clone)]
+enum NodeEvent {
+    Hover(Vec2),
+    Click(Vec2),
+}
+/// This takes a taffy node, checks if the event is consumed by any of its children.
+/// If it is not consumed, it will check if the event is consumed by the node itself.
+/// If it is consumed, it will return the node id of self.
+/// If it is consumed by one of the children, then it will return the returned node id.
+/// If it is not consumed by any of the children or itself, it will return None.
+fn node_event_recursive(
+    tree: &mut TaffyTree,
+    ev: NodeEvent,
+    offset: Vec2,
+    node_id: taffy::NodeId,
+) -> Option<NodeId> {
+    let layout = *tree.get_final_layout(node_id);
+
+    let new_offset = offset + egui::vec2(layout.location.x, layout.location.y);
+
+    let mut children = tree.children(node_id).unwrap_or_default();
+    children.sort_unstable_by_key(|i| tree.get_final_layout(*i).order);
+    for child in children {
+        if let Some(new_node_id) = node_event_recursive(tree, ev, new_offset, child) {
+            return Some(new_node_id);
+        }
+    }
+
+    let node_rect = egui::Rect::from_min_size(
+        [layout.location.x, layout.location.y].into(),
+        [layout.size.width, layout.size.height].into(),
+    )
+    .translate(offset);
+    match ev {
+        NodeEvent::Hover(vec2) => {
+            if node_rect.contains(egui::pos2(vec2.x, vec2.y)) {
+                return Some(node_id);
+            }
+        }
+        NodeEvent::Click(vec2) => {
+            if node_rect.contains(egui::pos2(vec2.x, vec2.y)) {
+                return Some(node_id);
+            }
+        }
+    }
+    None
+}
+fn node_tree_paint_recursive(
+    tree: &TaffyTree,
+    node_id: taffy::NodeId,
+    painter: &Painter,
+    offset: Vec2,
+    focused_node: NodeId,
+) {
+    let layout = *tree.get_final_layout(node_id);
+    let node_rect = egui::Rect::from_min_size(
+        [layout.location.x, layout.location.y].into(),
+        [layout.size.width, layout.size.height].into(),
+    );
+    let node_rect = node_rect.translate(offset);
+    let _res = painter.rect(
+        node_rect,
+        0.0,
+        Color32::TRANSPARENT,
+        Stroke::new(
+            1.0,
+            if focused_node == node_id {
+                Color32::RED
+            } else {
+                Color32::GREEN
+            },
+        ),
+    );
+    let new_offset = offset + egui::vec2(layout.location.x, layout.location.y);
+    if tree.child_count(node_id) != 0 {
+        let mut children = tree.children(node_id).unwrap_or_default();
+        children.sort_unstable_by_key(|i| tree.get_final_layout(*i).order);
+        for child in children {
+            node_tree_paint_recursive(tree, child, painter, new_offset, focused_node);
+        }
+    }
+}
 impl TemplateApp {
     /// Called once before the first frame.
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // This is also where you can customize the look and feel of egui using
-        // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
-
-        // Load previous app state (if any).
-        // Note that you must enable the `persistence` feature for this to work.
-        if let Some(storage) = cc.storage {
-            return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
-        }
-
+    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         Default::default()
     }
 }
 
 impl eframe::App for TemplateApp {
-    /// Called by the frame work to save state before shutdown.
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, eframe::APP_KEY, self);
-    }
-
     /// Called each time the UI needs repainting, which may be many times per second.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Put your widgets into a `SidePanel`, `TopBottomPanel`, `CentralPanel`, `Window` or `Area`.
-        // For inspiration and more examples, go to https://emilk.github.io/egui
-
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            // The top panel is often a good place for a menu bar:
-
-            egui::menu::bar(ui, |ui| {
-                // NOTE: no File->Quit on web pages!
-                let is_web = cfg!(target_arch = "wasm32");
-                if !is_web {
-                    ui.menu_button("File", |ui| {
-                        if ui.button("Quit").clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                    });
-                    ui.add_space(16.0);
-                }
-
-                egui::widgets::global_theme_preference_buttons(ui);
-            });
-        });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding TopPanel's and SidePanel's
-            ui.heading("eframe template");
-
-            ui.horizontal(|ui| {
-                ui.label("Write something: ");
-                ui.text_edit_singleline(&mut self.label);
-            });
-
-            ui.add(egui::Slider::new(&mut self.value, 0.0..=10.0).text("value"));
-            if ui.button("Increment").clicked() {
-                self.value += 1.0;
-            }
-
-            ui.separator();
-
-            ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/main/",
-                "Source code."
-            ));
-
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                powered_by_egui_and_eframe(ui);
-                egui::warn_if_debug_build(ui);
-            });
-        });
+        self.editor.ui("taffy editor", ctx);
     }
-}
-
-fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.label("Powered by ");
-        ui.hyperlink_to("egui", "https://github.com/emilk/egui");
-        ui.label(" and ");
-        ui.hyperlink_to(
-            "eframe",
-            "https://github.com/emilk/egui/tree/master/crates/eframe",
-        );
-        ui.label(".");
-    });
 }
