@@ -1,4 +1,4 @@
-use egui::{Color32, ComboBox, DragValue, Painter, Sense, Stroke, UiBuilder, Vec2};
+use egui::{Color32, ComboBox, DragValue, Painter, Sense, SidePanel, Stroke, UiBuilder, Vec2};
 use taffy::{
     prelude::TaffyZero, AlignContent, AlignItems, AlignSelf, BoxSizing, Dimension, FlexDirection,
     LengthPercentage, MaxTrackSizingFunction, MinTrackSizingFunction, NodeId, PrintTree, Size,
@@ -122,9 +122,11 @@ impl TaffyEditor {
             .default_size([600.0, 400.0])
             .scroll([true, true])
             .show(ctx, |ui| {
-                ui.columns(2, |columns| {
-                    node_tree_ui_recursive(&mut columns[0], tree, root, current_value);
-                    taffy_style_editor(&mut columns[1], tree, *current_value, default_style);
+                SidePanel::left("node selector").show_inside(ui, |ui| {
+                    node_tree_ui_recursive(ui, tree, root, current_value);
+                });
+                ui.indent("style editor indent", |ui| {
+                    taffy_style_editor(ui, tree, *current_value, default_style)
                 });
             });
         tree.compute_layout(
