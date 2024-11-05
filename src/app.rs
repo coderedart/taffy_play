@@ -30,8 +30,12 @@ impl Default for TaffyEditor {
         default_style.flex_grow = 1.0;
         default_style.box_sizing = BoxSizing::ContentBox;
         default_style.size = Size {
-            width: Dimension::Length(50.0),
-            height: Dimension::Length(50.0),
+            width: Dimension::Auto,
+            height: Dimension::Auto,
+        };
+        default_style.gap = taffy::Size {
+            width: LengthPercentage::Length(10.0),
+            height: LengthPercentage::Length(10.0),
         };
         let c0_0 = tree.new_leaf(default_style.clone()).unwrap();
         let c0_1 = tree.new_leaf(default_style.clone()).unwrap();
@@ -40,8 +44,7 @@ impl Default for TaffyEditor {
             .new_with_children(
                 {
                     let mut style = default_style.clone();
-                    style.flex_direction = FlexDirection::Row;
-
+                    style.flex_direction = FlexDirection::Column;
                     style
                 },
                 &[c0_0, c0_1],
@@ -71,7 +74,7 @@ impl Default for TaffyEditor {
     }
 }
 impl TaffyEditor {
-    pub fn ui(&mut self, name: &str, ctx: &egui::Context) {
+    pub fn ui(&mut self, ctx: &egui::Context) {
         let Self {
             tree,
             root,
@@ -79,7 +82,7 @@ impl TaffyEditor {
             default_style,
         } = self;
         let root = *root;
-        egui::Window::new(name)
+        egui::Window::new("Node Visuals")
             .default_size([600.0, 400.0])
             .show(ctx, |ui| {
                 let layout = *tree.get_final_layout(root);
@@ -118,7 +121,7 @@ impl TaffyEditor {
                     },
                 );
             });
-        egui::Window::new("node editor")
+        egui::Window::new("Node Editor")
             .default_size([600.0, 400.0])
             .scroll([true, true])
             .show(ctx, |ui| {
@@ -953,6 +956,6 @@ impl TemplateApp {
 impl eframe::App for TemplateApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.editor.ui("taffy editor", ctx);
+        self.editor.ui(ctx);
     }
 }
