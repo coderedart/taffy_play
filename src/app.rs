@@ -1,8 +1,8 @@
 use egui::{Color32, ComboBox, DragValue, Painter, Sense, SidePanel, Stroke, UiBuilder, Vec2};
 use taffy::{
     prelude::TaffyZero, AlignContent, AlignItems, AlignSelf, BoxSizing, Dimension, FlexDirection,
-    LengthPercentage, MaxTrackSizingFunction, MinTrackSizingFunction, NodeId, PrintTree, Size,
-    Style, TaffyTree, TextAlign, TraversePartialTree,
+    LengthPercentage, LengthPercentageAuto, MaxTrackSizingFunction, MinTrackSizingFunction, NodeId,
+    PrintTree, Size, Style, TaffyTree, TextAlign, TraversePartialTree,
 };
 
 #[derive(Default, Debug)]
@@ -22,6 +22,18 @@ impl Default for TaffyEditor {
         let mut tree = TaffyTree::new();
         let mut default_style = Style::DEFAULT;
         default_style.padding = taffy::Rect {
+            left: LengthPercentage::Length(10.0),
+            right: LengthPercentage::Length(10.0),
+            top: LengthPercentage::Length(10.0),
+            bottom: LengthPercentage::Length(10.0),
+        };
+        default_style.margin = taffy::Rect {
+            left: LengthPercentageAuto::Length(10.0),
+            right: LengthPercentageAuto::Length(10.0),
+            top: LengthPercentageAuto::Length(10.0),
+            bottom: LengthPercentageAuto::Length(10.0),
+        };
+        default_style.border = taffy::Rect {
             left: LengthPercentage::Length(10.0),
             right: LengthPercentage::Length(10.0),
             top: LengthPercentage::Length(10.0),
@@ -923,19 +935,51 @@ fn node_tree_paint_recursive(
         [layout.location.x, layout.location.y].into(),
         [layout.size.width, layout.size.height].into(),
     );
-    let node_rect = node_rect.translate(offset);
-    let _res = painter.rect(
-        node_rect,
+    let margin_rect = node_rect.translate(offset);
+    /// Takes a rect, shrinks it by cutting the respective side with values from the cuts and gives us the sub rect
+    fn get_sub_rect(rect: egui::Rect, cuts: taffy::Rect<f32>) -> egui::Rect {
+        egui::Rect::from_min_max(
+            egui::pos2(rect.min.x + cuts.left, rect.min.y + cuts.top),
+            egui::pos2(rect.max.x - cuts.right, rect.max.y - cuts.bottom),
+        )
+    }
+    painter.rect_filled(
+        margin_rect,
         0.0,
-        Color32::TRANSPARENT,
-        Stroke::new(
-            1.0,
-            if focused_node == node_id {
-                Color32::RED
-            } else {
-                Color32::GREEN
-            },
-        ),
+        Color32::from_hex("#ff7046").unwrap_or_default(),
+    );
+    if focused_node == node_id {
+        painter.add(egui::Shape::dashed_line(
+            &[
+                margin_rect.left_top(),
+                margin_rect.right_top(),
+                margin_rect.right_bottom(),
+                margin_rect.left_bottom(),
+                margin_rect.left_top()
+            ],
+            Stroke::new(5.0, Color32::DEBUG_COLOR),
+            10.0,
+            10.0
+        ));
+        // painter.rect_stroke(margin_rect, 3.0, Stroke::new(5.0, Color32::RED));
+    }
+    let border_rect = get_sub_rect(margin_rect, layout.margin);
+    painter.rect_filled(
+        border_rect,
+        0.0,
+        Color32::from_hex("#00a6c3").unwrap_or_default(),
+    );
+    let padding_rect = get_sub_rect(border_rect, layout.border);
+    painter.rect_filled(
+        padding_rect,
+        0.0,
+        Color32::from_hex("#fac357").unwrap_or_default(),
+    );
+    let content_rect = get_sub_rect(padding_rect, layout.padding);
+    painter.rect_filled(
+        content_rect,
+        0.0,
+        Color32::from_hex("#00c4a8").unwrap_or_default(),
     );
     let new_offset = offset + egui::vec2(layout.location.x, layout.location.y);
     if tree.child_count(node_id) != 0 {
