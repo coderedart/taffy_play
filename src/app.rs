@@ -141,7 +141,34 @@ impl TaffyEditor {
                     node_tree_ui_recursive(ui, tree, root, current_value);
                 });
                 ui.indent("style editor indent", |ui| {
-                    taffy_style_editor(ui, tree, *current_value, default_style)
+                    const GIT_HASH: &str = env!("VERGEN_GIT_SHA");
+                    ui.label(format!("git hash: {GIT_HASH}"));
+
+                    ui.horizontal(|ui| {
+                        if ui.button("add child").clicked() {
+                            let child = tree.new_leaf(default_style.clone()).unwrap();
+                            tree.add_child(*current_value, child).unwrap();
+                        }
+                        if ui.button("delete node ").clicked() {
+                            let new_current_value = tree.parent(*current_value).unwrap_or(root);
+                            let _ = tree.remove(*current_value);
+                            *current_value = new_current_value;
+                        }
+                        if ui.button("reset style").clicked() {
+                            tree.set_style(*current_value, default_style.clone())
+                                .unwrap();
+                        }
+                        let res = ui.button("print tree");
+                        if res.clicked() {
+                            tree.print_tree(*current_value);
+                        }
+                        if res.hovered() {
+                            res.on_hover_text(
+                                "prints node tree to the console starting from the selected node",
+                            );
+                        }
+                    });
+                    taffy_style_editor(ui, tree, *current_value)
                 });
             });
         tree.compute_layout(
@@ -170,24 +197,10 @@ fn node_tree_ui_recursive(
         });
     }
 }
-fn taffy_style_editor(
-    ui: &mut egui::Ui,
-    tree: &mut TaffyTree,
-    node_id: taffy::NodeId,
-    default_style: &Style,
-) {
+fn taffy_style_editor(ui: &mut egui::Ui, tree: &mut TaffyTree, node_id: taffy::NodeId) {
     let Ok(mut style) = tree.style(node_id).cloned() else {
         return;
     };
-    ui.horizontal(|ui| {
-        if ui.button("add child").clicked() {
-            let child = tree.new_leaf(default_style.clone()).unwrap();
-            tree.add_child(node_id, child).unwrap();
-        }
-        if ui.button("delete node ").clicked() {
-            let _ = tree.remove(node_id);
-        }
-    });
     egui::Grid::new("style editor")
         .num_columns(2)
         .striped(true)
@@ -955,11 +968,11 @@ fn node_tree_paint_recursive(
                 margin_rect.right_top(),
                 margin_rect.right_bottom(),
                 margin_rect.left_bottom(),
-                margin_rect.left_top()
+                margin_rect.left_top(),
             ],
             Stroke::new(5.0, Color32::DEBUG_COLOR),
             10.0,
-            10.0
+            10.0,
         ));
         // painter.rect_stroke(margin_rect, 3.0, Stroke::new(5.0, Color32::RED));
     }

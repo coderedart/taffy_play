@@ -16,10 +16,14 @@ eframe = { version = "0.29", default-features = false, features = [
     "glow",          # Use the glow rendering backend. Alternative: "wgpu".
 ] }
 log = "0.4"
-
 # You only need serde if you want app persistence:
 serde = { version = "1", features = ["derive"] }
 taffy = {version = "*"}
+
+[build-dependencies]
+vergen-gitcl = {version = "*", features = []}
+
+
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11"
