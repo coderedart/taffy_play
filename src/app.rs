@@ -149,11 +149,14 @@ impl TaffyEditor {
                             let child = tree.new_leaf(default_style.clone()).unwrap();
                             tree.add_child(*current_value, child).unwrap();
                         }
-                        if ui.button("delete node ").clicked() {
-                            let new_current_value = tree.parent(*current_value).unwrap_or(root);
-                            let _ = tree.remove(*current_value);
-                            *current_value = new_current_value;
-                        }
+                        ui.add_enabled_ui(*current_value != root, |ui| {
+                            if ui.button("delete node ").clicked() {
+                                let new_current_value = tree.parent(*current_value).unwrap_or(root);
+                                let _ = tree.remove(*current_value);
+                                *current_value = new_current_value;
+                            }
+                        });
+
                         if ui.button("reset style").clicked() {
                             tree.set_style(*current_value, default_style.clone())
                                 .unwrap();
